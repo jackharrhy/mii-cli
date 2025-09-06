@@ -3,3 +3,5 @@ __pycache__
 *.egg-info
 *.mii
 *.dat
+.DS_Store
+tmp

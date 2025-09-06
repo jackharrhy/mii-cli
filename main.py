@@ -4,6 +4,7 @@ Mii Extractor CLI - A tool for extracting .mii files from Dolphin dumped data
 """
 
 import os
+import struct
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -16,6 +17,77 @@ from rich.progress import Progress, TaskID
 
 app = typer.Typer(help="Extract and analyze Mii files from Wii/Dolphin files")
 console = Console()
+
+
+class MiiFileReader:
+    """Reader for extracting metadata from .mii files"""
+
+    def __init__(self, file_path: Path):
+        with open(file_path, "rb") as f:
+            self.data = f.read()
+
+        # Color mapping based on C# array
+        self.colors = [
+            "Red",
+            "Orange",
+            "Yellow",
+            "Green",
+            "DarkGreen",
+            "Blue",
+            "LightBlue",
+            "Pink",
+            "Purple",
+            "Brown",
+            "White",
+            "Black",
+        ]
+
+    def read_string(self, offset: int, length: int) -> str:
+        """Read UTF-16BE string from the file data"""
+        string_data = self.data[offset : offset + length]
+        # Find the first null terminator (0x0000 in UTF-16BE)
+        null_pos = string_data.find(b"\x00\x00")
+        if null_pos != -1:
+            # Ensure we align to 2-byte boundaries for UTF-16
+            if null_pos % 2 != 0:
+                null_pos -= 1
+            string_data = string_data[: null_pos + 2]
+
+        # Convert from UTF-16BE and remove null terminators
+        return string_data.decode("utf-16be").rstrip("\x00")
+
+    def read_mii_name(self) -> str:
+        """Read Mii name starting at offset 2"""
+        return self.read_string(2, 20)
+
+    def read_creator_name(self) -> str:
+        """Read creator name starting at offset 54"""
+        return self.read_string(54, 20)
+
+    def read_mii_metadata(self) -> list:
+        """Read and parse Mii metadata from first 2 bytes"""
+        # Read first 2 bytes and convert to binary string
+        metadata_bytes = self.data[0:2]
+        binary_str = "".join(format(b, "08b") for b in metadata_bytes)
+
+        # Extract metadata fields
+        is_girl = int(binary_str[1], 2)
+        birth_month = int(binary_str[2:6], 2)
+        birth_day = int(binary_str[6:11], 2)
+        favorite_color = int(binary_str[11:15], 2)
+        is_favorite = int(binary_str[15], 2)
+
+        return [is_girl, birth_month, birth_day, favorite_color, is_favorite]
+
+    def read_mii_id(self) -> bytes:
+        """Read 4-byte Mii ID starting at offset 24"""
+        return self.data[24:28]
+
+    def get_color_name(self, color_index: int) -> str:
+        """Get color name from color index"""
+        if 0 <= color_index < len(self.colors):
+            return self.colors[color_index]
+        return f"Unknown ({color_index})"
 
 
 class MiiType(Enum):
@@ -218,6 +290,109 @@ def times(
     console.print(
         f"\n[green]Successfully analyzed {successful_analyses}/{len(mii_files)} files[/green]"
     )
+
+
+@app.command()
+def metadata(
+    directory: Path = typer.Option(
+        Path("."), "--directory", "-d", help="Directory containing .mii files"
+    ),
+    single_file: Optional[Path] = typer.Option(
+        None, "--file", "-f", help="Analyze a single .mii file"
+    ),
+):
+    """Display metadata for Mii files (names, colors, birthdays, etc.)"""
+
+    if single_file:
+        # Analyze single file
+        if not single_file.exists():
+            console.print(f"[red]Error: File {single_file} does not exist[/red]")
+            raise typer.Exit(1)
+
+        try:
+            reader = MiiFileReader(single_file)
+
+            mii_name = reader.read_mii_name()
+            creator_name = reader.read_creator_name()
+            metadata = reader.read_mii_metadata()
+            mii_id = reader.read_mii_id()
+            color_name = reader.get_color_name(metadata[3])
+
+            table = Table(title=f"Metadata for {single_file.name}")
+            table.add_column("Property", style="cyan")
+            table.add_column("Value", style="green")
+
+            table.add_row("Mii Name", mii_name)
+            table.add_row("Creator Name", creator_name)
+            table.add_row("Gender", "Female" if metadata[0] else "Male")
+            table.add_row("Birth Month", str(metadata[1]) if metadata[1] else "Not set")
+            table.add_row("Birth Day", str(metadata[2]) if metadata[2] else "Not set")
+            table.add_row("Favorite Color", color_name)
+            table.add_row("Is Favorite", "Yes" if metadata[4] else "No")
+            table.add_row("Mii ID", mii_id.hex().upper())
+
+            console.print(table)
+
+        except Exception as e:
+            console.print(f"[red]Error reading {single_file}: {e}[/red]")
+            raise typer.Exit(1)
+
+    else:
+        # Analyze directory
+        if not directory.exists():
+            console.print(f"[red]Error: Directory {directory} does not exist[/red]")
+            raise typer.Exit(1)
+
+        mii_files = list(directory.glob("*.mii"))
+        if not mii_files:
+            console.print(f"[yellow]No .mii files found in {directory}[/yellow]")
+            return
+
+        console.print(f"[bold]Analyzing {len(mii_files)} .mii files...[/bold]\n")
+
+        table = Table(title="Mii Metadata")
+        table.add_column("Filename", style="cyan")
+        table.add_column("Mii Name", style="green")
+        table.add_column("Creator", style="blue")
+        table.add_column("Gender", style="magenta")
+        table.add_column("Birthday", style="yellow")
+        table.add_column("Favorite Color", style="red")
+
+        successful_analyses = 0
+
+        for mii_file in sorted(mii_files):
+            try:
+                reader = MiiFileReader(mii_file)
+
+                mii_name = reader.read_mii_name()
+                creator_name = reader.read_creator_name()
+                metadata = reader.read_mii_metadata()
+                color_name = reader.get_color_name(metadata[3])
+
+                gender = "F" if metadata[0] else "M"
+                birthday = (
+                    f"{metadata[1]}/{metadata[2]}"
+                    if metadata[1] and metadata[2]
+                    else "Not set"
+                )
+
+                table.add_row(
+                    mii_file.name,
+                    mii_name or "Unnamed",
+                    creator_name or "Unknown",
+                    gender,
+                    birthday,
+                    color_name,
+                )
+                successful_analyses += 1
+
+            except Exception as err:
+                console.print(f"[red]Error analyzing {mii_file.name}: {err}[/red]")
+
+        console.print(table)
+        console.print(
+            f"\n[green]Successfully analyzed {successful_analyses}/{len(mii_files)} files[/green]"
+        )
 
 
 @app.command()
