@@ -5,3 +5,4 @@ __pycache__
 *.dat
 .DS_Store
 tmp
+.envrc
