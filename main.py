@@ -5,6 +5,7 @@ Mii Extractor CLI - A tool for extracting .mii files from Dolphin dumped data
 
 import os
 import struct
+import csv
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -300,6 +301,9 @@ def metadata(
     single_file: Optional[Path] = typer.Option(
         None, "--file", "-f", help="Analyze a single .mii file"
     ),
+    csv_output: Optional[Path] = typer.Option(
+        None, "--csv", "-c", help="Save results to CSV file"
+    ),
 ):
     """Display metadata for Mii files (names, colors, birthdays, etc.)"""
 
@@ -350,14 +354,7 @@ def metadata(
 
         console.print(f"[bold]Analyzing {len(mii_files)} .mii files...[/bold]\n")
 
-        table = Table(title="Mii Metadata")
-        table.add_column("Filename", style="cyan")
-        table.add_column("Mii Name", style="green")
-        table.add_column("Creator", style="blue")
-        table.add_column("Gender", style="magenta")
-        table.add_column("Birthday", style="yellow")
-        table.add_column("Favorite Color", style="red")
-
+        results = []
         successful_analyses = 0
 
         for mii_file in sorted(mii_files):
@@ -367,29 +364,88 @@ def metadata(
                 mii_name = reader.read_mii_name()
                 creator_name = reader.read_creator_name()
                 metadata = reader.read_mii_metadata()
+                mii_id = reader.read_mii_id()
                 color_name = reader.get_color_name(metadata[3])
 
-                gender = "F" if metadata[0] else "M"
+                gender = "Female" if metadata[0] else "Male"
+                gender_short = "F" if metadata[0] else "M"
                 birthday = (
                     f"{metadata[1]}/{metadata[2]}"
                     if metadata[1] and metadata[2]
                     else "Not set"
                 )
 
-                table.add_row(
-                    mii_file.name,
-                    mii_name or "Unnamed",
-                    creator_name or "Unknown",
-                    gender,
-                    birthday,
-                    color_name,
-                )
+                result_data = {
+                    "filename": mii_file.name,
+                    "mii_name": mii_name or "Unnamed",
+                    "creator_name": creator_name or "Unknown",
+                    "is_girl": metadata[0],
+                    "gender": gender,
+                    "birth_month": metadata[1],
+                    "birth_day": metadata[2],
+                    "birthday": birthday,
+                    "favorite_color": color_name,
+                    "favorite_color_index": metadata[3],
+                    "is_favorite": metadata[4],
+                    "mii_id": mii_id.hex().upper(),
+                }
+
+                results.append(result_data)
                 successful_analyses += 1
 
             except Exception as err:
                 console.print(f"[red]Error analyzing {mii_file.name}: {err}[/red]")
 
-        console.print(table)
+        if csv_output:
+            # Save to CSV
+            if results:
+                fieldnames = [
+                    "filename",
+                    "mii_name",
+                    "creator_name",
+                    "is_girl",
+                    "gender",
+                    "birth_month",
+                    "birth_day",
+                    "birthday",
+                    "favorite_color",
+                    "favorite_color_index",
+                    "is_favorite",
+                    "mii_id",
+                ]
+
+                with open(csv_output, "w", newline="", encoding="utf-8") as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(results)
+
+                console.print(
+                    f"[green]Saved metadata for {len(results)} .mii files to {csv_output}[/green]"
+                )
+            else:
+                console.print("[yellow]No data to save to CSV[/yellow]")
+        else:
+            # Display table
+            table = Table(title="Mii Metadata")
+            table.add_column("Filename", style="cyan")
+            table.add_column("Mii Name", style="green")
+            table.add_column("Creator", style="blue")
+            table.add_column("Gender", style="magenta")
+            table.add_column("Birthday", style="yellow")
+            table.add_column("Favorite Color", style="red")
+
+            for result in results:
+                table.add_row(
+                    result["filename"],
+                    result["mii_name"],
+                    result["creator_name"],
+                    result["gender"][0],  # Just show M/F for display
+                    result["birthday"],
+                    result["favorite_color"],
+                )
+
+            console.print(table)
+
         console.print(
             f"\n[green]Successfully analyzed {successful_analyses}/{len(mii_files)} files[/green]"
         )
